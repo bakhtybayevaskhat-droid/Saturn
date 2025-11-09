@@ -1,4 +1,7 @@
-import { createServer } from "http";
+// ИЗМЕНЕНИЕ: Импортируем https для SSL и fs для чтения файлов
+import { createServer as createHttpsServer } from "https";
+import { createServer as createHttpServer } from "http";
+import { readFileSync } from "fs";
 import { join } from "path";
 import express from "express";
 import { routeRequest } from "wisp-server-node";
@@ -12,22 +15,36 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const port = parseInt(process.env.PORT || "8080", 10);
+// ИЗМЕНЕНИЕ: Определяем порты для HTTPS и HTTP
+const httpsPort = 443;
+const httpPort = 80;
+
+// ИЗМЕНЕНИЕ: Пути к вашим SSL-сертификатам от Let's Encrypt
+// Убедитесь, что домен в пути указан правильно (основной домен)
+const sslOptions = {
+    key: readFileSync("/etc/letsencrypt/live/factwiki.me/privkey.pem"),
+    cert: readFileSync("/etc/letsencrypt/live/factwiki.me/fullchain.pem"),
+};
+
 const info = {
     "version": "1.0",
 };
 
+// ИЗМЕНЕНИЕ: Обновляем стартовое сообщение
 const startup_msg = `
 | SaturnProxy ${info.version} |
 
-Running on:
-    http://localhost:${port}
+Running HTTPS on:
+    https://localhost:${httpsPort}
+Running HTTP redirect on:
+    http://localhost:${httpPort}
 `;
 
 const pubDir = join(__dirname, "public");
 
 const app = express();
-const server = createServer(app);
+// ИЗМЕНЕНИЕ: Создаем HTTPS сервер, передавая опции SSL и express-приложение
+const httpsServer = createHttpsServer(sslOptions, app);
 
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -60,7 +77,8 @@ app.use((req, res) => {
     res.status(404).sendFile(join(pubDir, "404.html"));
 });
 
-server.on("upgrade", (req, socket, head) => {
+// ИЗМЕНЕНИЕ: Вешаем обработчик WebSocket на HTTPS сервер
+httpsServer.on("upgrade", (req, socket, head) => {
     if (req.url.endsWith("/wisp/")) {
         routeRequest(req, socket, head);
     } else {
@@ -68,6 +86,18 @@ server.on("upgrade", (req, socket, head) => {
     }
 });
 
-server.listen(port, "0.0.0.0", () => {
+// ИЗМЕНЕНИЕ: Запускаем HTTPS сервер на порту 443
+httpsServer.listen(httpsPort, "0.0.0.0", () => {
     console.log(startup_msg);
+});
+
+// ИЗМЕНЕНИЕ: Создаем и запускаем второй, HTTP-сервер для редиректа на HTTPS
+const httpServer = createHttpServer((req, res) => {
+    // Перенаправляем на https-версию с кодом 301 (Permanent Redirect)
+    res.writeHead(301, { "Location": "https://" + req.headers['host'] + req.url });
+    res.end();
+});
+
+httpServer.listen(httpPort, "0.0.0.0", () => {
+    console.log(`HTTP server is running on port ${httpPort} and redirecting to HTTPS.`);
 });
